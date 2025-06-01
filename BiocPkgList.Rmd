@@ -28,13 +28,14 @@ suppressPackageStartupMessages({
     library(igraph)
     library(ggplot2)
     library(ggrepel)
+    library(plotly)
 })
 ```
 
 # Get list of packages
 
 ```{r}
-bpi <- biocPkgList()
+bpi <- biocPkgList(version = "devel")
 ```
 
 # Get and summarize download stats
@@ -43,14 +44,14 @@ bpi <- biocPkgList()
 ds <- biocDownloadStats(pkgType = "software")
 ads <- anacondaDownloadStats()
 
-## Total downloads in 2022
-ds <- ds %>%
-    dplyr::filter(Year == 2022) %>%
-    dplyr::group_by(Package) %>%
+## Total downloads in 2024
+ds <- ds |>
+    dplyr::filter(Year == 2024) |>
+    dplyr::group_by(Package) |>
     dplyr::summarize(NbDownloadsBioc = sum(Nb_of_downloads))
-ads <- ads %>%
-    dplyr::filter(Year == 2022) %>%
-    dplyr::group_by(Package) %>%
+ads <- ads |>
+    dplyr::filter(Year == 2024) |>
+    dplyr::group_by(Package) |>
     dplyr::summarize(NbDownloadsConda = sum(Nb_of_downloads))
 ```
 
@@ -62,34 +63,47 @@ depdf <- BiocPkgTools::buildPkgDependencyDataFrame(
     repo = c("BioCsoft", "CRAN"),
     dependencies = c("Depends", "Imports")
 )
+## ... edges go from package to upstream dependencies/imports
 g <- BiocPkgTools::buildPkgDependencyIgraph(depdf)
 
-## Get all packages
+## Get all packages (will include both Bioc and CRAN packages, if the latter 
+## are dependencies for Bioc packages)
 pkgs <- setdiff(names(igraph::V(g)), "")
+length(pkgs)
 
-## Initialize dependency matrix
-## Package in row depends on packages in columns
-depmat <- matrix(0, nrow = length(pkgs), ncol = length(pkgs))
-rownames(depmat) <- colnames(depmat) <- pkgs
+## Get Bioc packages
+bps <- bpi$Package
+bps <- intersect(bps, pkgs)
+length(bps)
 
-## Find dependencies
-for (p in pkgs) {
+## Initialize dependency matrix among Bioc packages
+## Package in row depends on/imports packages in columns
+# depmat <- matrix(0, nrow = length(pkgs), ncol = length(pkgs))
+# rownames(depmat) <- colnames(depmat) <- pkgs
+depmat <- matrix(0, nrow = length(bps), ncol = length(bps))
+rownames(depmat) <- colnames(depmat) <- bps
+
+## Find dependencies for each packages (direct and indirect)
+for (p in bps) {
     sc <- igraph::subcomponent(g, p, mode = "out")
-    depmat[p, setdiff(names(sc), "")] <- 1
+    depmat[p, intersect(setdiff(names(sc), ""), bps)] <- 1
+    # depmat[p, setdiff(names(sc), "")] <- 1
 }
 
 ## Subset dependency matrix to Bioc packages
-bps <- bpi$Package
-bps <- intersect(bps, pkgs)
 depmat_bioc <- depmat[bps, bps]
 
 ## Column sums ("how many packages depend - directly or indirectly - 
-## on a given package")
-cs <- colSums(depmat_bioc)
+## on a given package"). Subtract 1 to not include the package itself.
+cs <- colSums(depmat_bioc) - 1
 
 ## Number of direct reverse dependencies
+## ... for each node N, find all other nodes with an edge directly to N
+##     (i.e., depending directly on N)
 drevdeps <- igraph::ego(g, nodes = V(g), order = 1, mode = "in")
 drevdeps <- lapply(drevdeps, function(w) intersect(names(w), bps))
+## Get number of packages depending directly on each package (subtract 1 to not 
+## count the package itself)
 drevdeps <- vapply(drevdeps, length, 0) - 1
 names(drevdeps) <- names(V(g))
 drevdeps <- drevdeps[bps]
@@ -98,17 +112,17 @@ drevdeps <- drevdeps[bps]
 # Make summary table
 
 ```{r}
-bpisub <- bpi %>% 
-    dplyr::select(Package, hasNEWS, VignetteBuilder, BugReports, 
-                  PackageStatus, Maintainer, dependencyCount) %>%
-    dplyr::left_join(ds, by = "Package") %>%
-    dplyr::left_join(ads, by = "Package") %>%
-    dplyr::mutate(NbDownloadsConda = tidyr::replace_na(NbDownloadsConda, 0)) %>%
+bpisub <- bpi |>
+    dplyr::select(Package, Maintainer, dependencyCount) |>
+    dplyr::left_join(ds, by = "Package") |>
+    dplyr::left_join(ads, by = "Package") |>
+    dplyr::mutate(NbDownloadsConda = replace_na(NbDownloadsConda, 0),
+                  NbDownloadsBioc = replace_na(NbDownloadsBioc, 0)) |>
     dplyr::mutate(NbDownloadsBiocConda = NbDownloadsBioc + 
                       NbDownloadsConda)
 
-## Remove the package itself from the downstream dependencies
-bpisub$NbDependentPkgs <- cs[bpisub$Package] - 1
+## Add number of downstream dependencies (direct or direct + indirect)
+bpisub$NbDependentPkgs <- cs[bpisub$Package]
 bpisub$NbDirDependentPkgs <- drevdeps[bpisub$Package]
 
 ## Get download counts for downstream dependencies
@@ -123,14 +137,14 @@ bpisub$NbDownloadsBiocDepPkgs <-
 bpisub$NbDownloadsCondaDepPkgs <- 
     NbDownloadsCondaDepPkgs[bpisub$Package]
 
-bpisub <- bpisub %>%
+bpisub <- bpisub |>
     dplyr::mutate(NbDownloadsBiocCondaDepPkgs =
                       NbDownloadsBiocDepPkgs + 
                       NbDownloadsCondaDepPkgs)
 
 bpisub <- as.data.frame(bpisub)
 
-DT::datatable(bpisub %>% dplyr::arrange(desc(NbDownloadsBiocConda)), 
+DT::datatable(bpisub |> dplyr::arrange(desc(NbDownloadsBiocConda)), 
               extensions = "FixedColumns",
               options = list(scrollX = TRUE, fixedColumns = list(leftColumns = 2), 
                              pageLength = 25))
@@ -142,18 +156,29 @@ DT::datatable(bpisub %>% dplyr::arrange(desc(NbDownloadsBiocConda)),
 ggplot(bpisub, aes(x = NbDownloadsBioc, y = NbDownloadsConda)) + 
     geom_point(size = 3, alpha = 0.5) + theme_bw() + 
     geom_text_repel(
-        data = bpisub %>% 
+        data = bpisub |> 
             dplyr::filter(
                 (NbDownloadsBioc > 750000 & NbDownloadsConda < 50000) |
                     (NbDownloadsBioc < 500000 & NbDownloadsConda > 100000)),
         aes(label = Package), max.overlaps = Inf, size = 4,
-        min.segment.length = 0.1)
+        min.segment.length = 0.1) + 
+    labs(x = "Number of Bioc downloads for indicated package",
+         y = "Number of conda downloads for indicated package")
+## ... interactive version
+ggplotly(
+    ggplot(bpisub, aes(x = NbDownloadsBioc, y = NbDownloadsConda, 
+                       label = Package)) + 
+        geom_point(size = 3, alpha = 0.5) + theme_bw() + 
+    labs(x = "Number of Bioc downloads for indicated package",
+         y = "Number of conda downloads for indicated package")
+)
 
 ggplot(bpisub, aes(x = NbDownloadsBiocConda,
                    y = NbDownloadsBiocCondaDepPkgs)) + 
+    geom_abline(slope = 1, intercept = 0, color = "grey", linetype = "dotted") + 
     geom_point(size = 3, alpha = 0.5) + theme_bw() + 
     geom_text_repel(
-        data = bpisub %>% 
+        data = bpisub |> 
             dplyr::filter(
                 (NbDownloadsBiocConda > 750000) |
                     (NbDownloadsBiocConda < 500000 &
@@ -161,18 +186,23 @@ ggplot(bpisub, aes(x = NbDownloadsBiocConda,
                     (NbDownloadsBiocConda < 250000 &
                          NbDownloadsBiocCondaDepPkgs > 3000000)), 
         aes(label = Package), max.overlaps = Inf, size = 4,
-        min.segment.length = 0.1)
+        min.segment.length = 0.1) + 
+    labs(x = "Number of downloads from Bioc + conda for indicated package",
+         y = "Number of downloads from Bioc + conda\nfor downstream dependencies of indicated package")
 
 ggplot(bpisub, aes(x = NbDirDependentPkgs, y = NbDependentPkgs)) + 
+    geom_abline(slope = 1, intercept = 0, color = "grey", linetype = "dotted") + 
     geom_point(size = 3, alpha = 0.5) + theme_bw() + 
     geom_text_repel(
-        data = bpisub %>% 
+        data = bpisub |> 
             dplyr::filter(
-                (NbDirDependentPkgs > 400) |
-                    (NbDirDependentPkgs < 100 &
-                         NbDependentPkgs > 500)), 
+                (NbDirDependentPkgs > 120) |
+                    (NbDirDependentPkgs < 120 &
+                         NbDependentPkgs > 300)), 
         aes(label = Package), max.overlaps = Inf, size = 4,
-        min.segment.length = 0.1)
+        min.segment.length = 0.1) + 
+    labs(x = "Number of packages directly importing indicated package",
+         y = "Number of packages directly or indirectly\nimporting indicated package")
 ```
 
 # Session info
