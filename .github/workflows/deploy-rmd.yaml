@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          - {os: macOS-latest, r: 'release', bioc: '3.16'}
+          - {os: macOS-latest, r: 'release', bioc: '3.21'}
 
     env:
       R_REMOTES_NO_ERRORS_FROM_WARNINGS: true
@@ -49,7 +49,7 @@ jobs:
           BiocManager::install(version = "${{ matrix.config.bioc }}", ask = FALSE)
           BiocManager::install(c('htmltools', 'knitr', 'rmarkdown', 'DT',
                                  'BiocPkgTools', 'dplyr', 'tidyr', 'ggplot2',
-                                 'igraph', 'ggrepel'))
+                                 'igraph', 'ggrepel', 'plotly'))
         shell: Rscript {0}
 
       - name: Session info
